@@ -1,0 +1,237 @@
+* Introduction
+  The "Damn Vulnerable" series of challenges offer purposfully
+  vulnerable applications in a challange based framework to educate
+  players on security concepts. The Damn Vulnerable DeFi project
+  provides a dozen challenges based around exploiting vulnerable
+  smart-contracts. This article lays out my reasoning and the eventual
+  solutions for each challange.
+
+  There are a few things the unfamilliar reader should be aquainted
+  with. This section may be skipped if you are already knowledgable on
+  the processes of smart contracts and the Ethereum Virtual Machine
+  (EVM). A table of contents for each challenge along with a short
+  description is produced further below.
+
+  First, smart-contracts represent small programs that can be deployed
+  on the Ethereum blockchain. Contractual transactions are a wholly
+  different paradigm than that of traditional computer
+  programs. Contracts are processed and verified by a network of
+  distributed computers, each making sure that rules encoded in the
+  contracts are not broken. A contract either succeds fully or is
+  rejected.
+
+  Only when a contractual program succeeds for the majority of nodes
+  does it become part of the distributed ledger. If any one
+  requirement fails, it is as if the program never took place.
+
+  Secondly, function calls can be accompanied by a 'value'. This value
+  represents a certain amount of Ethereum. When a contract calls a
+  function of another contract with some value, the ownership of that
+  Ethereum is transfered to the receiving contract. This understanding
+  will become handy later on when solving the challenges.
+
+  1. [[*Unstoppable]] - Breaking a flash loan smart-contract
+  2. [[*Naive Receiver]] - Draining a third-party flash loan receiver
+  3. [[*Truster]] - A lender allows abritrary code execution
+* Unstoppable
+  This challenge provided two contracts, a 'flash loan' lender and a
+  receiver. The objective was to break the 'unstoppable' lending
+  contract.
+
+  A 'flash loan' is a decentralised method of providing short loans to
+  third-party contracts that require collateral to perform some
+  computation on the Ethereum Virtual Machine (EVM). These loans must be
+  payed back promptly or the contract will fail and this computation
+  will not reach consensus.
+
+  I tuned my attention first to the =UnstoppableLender.sol= contract,
+  which ultimately was the vulnerable contract. The main function here
+  is called ~flashLoan~. It checks before and after handing control to
+  the third-party contract that the tokens owned by the lending
+  contract are balanced--that the loan has been repaid. The code
+  checking if the loan has been payed back is included below:
+
+  #+begin_src solidity
+    uint256 balanceAfter = damnValuableToken.balanceOf(address(this));         
+    require(balanceAfter >= balanceBefore, "Flash loan hasn't been paid back");
+  #+end_src
+  
+  Above that function there exists a ~depositTokens~ function. The
+  purpose of this function was to transfer tokens, in this case
+  'DamnValuableTokens' into the contract's pool, and to increment the
+  pool's balance to keep it in accordance with it's token
+  balance. This was strange as it seemed redundant. If one wanted to
+  know how many tokens he possesses, one would use the ERC20 standard
+  function ~balanceOf~ with the address of the wallet or contract. The
+  referenced function is shown below:
+
+  #+begin_src solidity
+    function depositTokens(uint256 amount) external nonReentrant {
+        require(amount > 0, "Must deposit at least one token");
+        // Transfer token from sender. Sender must have first approved them.
+        damnValuableToken.transferFrom(msg.sender, address(this), amount);
+        poolBalance = poolBalance + amount;
+    }
+  #+end_src
+
+  Knowing that the above function would likely be a contributor to
+  exploiting this contract I went back to the ~flashLoan~ function and
+  found an assertion that I could thwart.
+
+  #+caption: The assertion in question
+  #+begin_src solidity
+    // Ensured by the protocol via the `depositTokens` function
+    assert(poolBalance == balanceBefore);
+  #+end_src
+
+  The assertion checks if the balance of the contract is equal to the
+  pool balance. Now remember ~poolBalance~ is updated only by the
+  ~depositTokens~ function which can be easily bypassed just by
+  sending tokens from the attacker to the contract using the standard
+  ERC20 function ~transfer~. Let it be known that the attacker already
+  owns some tokens given to us for this challenge.
+
+  Now, the exploit is fairly trivial. First, we must connect to the
+  'DamnVulnerableToken' contract to authorise it to act on our behalf
+  since we own the tokens, and then transfer some tokens from the
+  attackers address to the =UnstoppableLender= contract. This will
+  cause the balance of the contract to increase without updating the
+  ~poolBalance~ variable and the assertion will fail, breaking any
+  future loan applications. The solution for this challenge is below:
+
+  #+begin_src js
+    const signedToken = this.token.connect(attacker);
+    signedToken.transfer(this.pool.address, INITIAL_ATTACKER_TOKEN_BALANCE);
+  #+end_src
+* Naive Receiver
+  This challenge once again presents a flash loan lender and receiver
+  contract, this time with a fixed fee. The goal for this challenge is
+  to drain the contract of a third-party, who's source is contained in
+  the file =FlashLoanReceiver.sol=. Checking out this file shows that,
+  indeed the fee is being paid.
+
+  Next up, the lender contract--=NaiveReceiverLenderPool.sol=. In this
+  contract we can see the ~flashLoan~ function again, this time
+  altered slightly to take into account the fixed fee of one
+  ether.
+
+  Now, this function's signature (shown below) has been added to. This
+  time a borrower address is required pointing to a deployed
+  contract. This must have been added to allow owners of a contract to
+  request a flash loan for said contract at any time. For example, to
+  request different amounts at certain times without needing to deploy
+  a brand new contract.
+
+  #+begin_src solidity
+    function flashLoan(address borrower, uint256 borrowAmount) external nonReentrant
+  #+end_src
+
+  But this contract has a fatal flaw. There is no verification that
+  the person requesting the flash loan is the owner of the deployed
+  contract. This means that we can repeatably request loans of any
+  value and have that contract incur the fee. This allows one to
+  quicky drain the balance of deployed receiver contracts.
+
+  The naive way of conducting this attack would be to request multiple
+  loans in separate transactions until the receiver is drained of all
+  funds. This would be inefficient and costly as each transaction is
+  repeated, and the attacker would have to foot the transaction fees
+  for each one. For completeness, the code for this attack is below:
+
+  #+begin_src js
+    for(let i = 0; i < 10; i++) {
+        this.pool.flashLoan(this.receiver.address, 0);
+    }
+  #+end_src
+
+  A much better way of exploiting this flash loan vulnerability would
+  be to deploy a contract as the attacker that would repeat the loan
+  application multiple times for us. The contract mentioned and the
+  code to deploy it are included below.
+
+  #+begin_src solidity
+    // SPDX-License-Identifier: MIT
+
+    pragma solidity ^0.8.0;
+
+    import "../naive-receiver/NaiveReceiverLenderPool.sol";
+
+    contract AttackNaiveReceiver {
+        NaiveReceiverLenderPool private pool;
+
+        constructor(address payable poolAddress) {
+            pool = NaiveReceiverLenderPool(poolAddress);
+        }
+
+        function attack(address borrower) external {
+            for(uint8 i; i < 10; i++) {
+                pool.flashLoan(borrower, 0);
+            }
+        }
+    }
+  #+end_src
+
+  #+begin_src js
+    const AttackNaiveReceiverFactory = await ethers.getContractFactory('AttackNaiveReceiver', attacker);
+    const attackerContract = await AttackNaiveReceiverFactory.deploy(this.pool.address);
+
+    attackerContract.attack(this.receiver.address);
+  #+end_src
+* Truster
+  This challenge is similar to the first one in how the loan is
+  lent. This time however, the ~flashLoan~ function requires two more
+  parameters. A target and some bytes. The bytes represent an encoded
+  function call with arguments. How the function signature is encoded
+  is determined by the Ethereum Application Binary Interface
+  (ABI). The function signature is as follows:
+
+  #+begin_src solidity
+    function flashLoan(
+        uint256 borrowAmount,
+        address borrower,
+        address target,
+        bytes calldata data
+    )
+  #+end_src
+
+  When called, this function will first lend the requested amount of
+  tokens to the receiver, then apply the calldata to the target. And
+  finally, ensure that the loan has been paid back.
+
+  I think the reason why the two paramenters were added was to allow
+  receiving contracts to dictate what function would be called when
+  requesting a loan, and with what paramenters. This would be unlike
+  the fixed function calls previously, these functions were determined
+  by the flash loan lender and needed to be implemented with the exact
+  function signature.
+
+  While this may seem beneficial, more flexability may induce
+  potential security vulnerabilities. Not only can the attacker still
+  control the borrower's address in the =TrusterLenderPool.sol=
+  contract, but any any function data he passes in will be executed as
+  the contract's signer against the selected target.
+
+  This means that since the contract deployer owns both the
+  =TrusterLenderPool= and =DamnValuableToken= contracts, we are able
+  to craft an exploit in such a way that we will be able to run with
+  all the tokens in circulation.
+
+  A contract may now be written that would make the lender contract
+  approve the attacker (more specifcally, the attacker's contract) to
+  have an allowance of all tokens in the pool, then all that's left is
+  a simple function call to transfer all tokens available, to the
+  attacker. The relevant section of the aforementioned contract is
+  below:
+
+  #+begin_src solidity
+    function attack(uint256 tokensToSteal) external {
+        bytes memory data = abi.encodeWithSignature("approve(address,uint256)", address(this), tokensToSteal);
+        pool.flashLoan(0 ether, address(this), address(token), data);
+        token.transferFrom(address(pool), msg.sender, tokensToSteal);
+    }
+  #+end_src
+
+  The tokens must be transfered to the contract first as the
+  ~transferFrom~ function will check if the sender has sufficient
+  allowance, otherwise the contract will fail with error =transfer
+  amount exceeds allowance=.
