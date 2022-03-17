@@ -1,68 +1,77 @@
 * Introduction
-  The "Damn Vulnerable" series of challenges offer purposfully
-  vulnerable applications in a challange based framework to educate
-  players on security concepts. The Damn Vulnerable DeFi project
+  The "Damn Vulnerable" series of challenges offer purposefully
+  vulnerable applications in a challenge based framework to educate
+  players on security concepts.  The Damn Vulnerable DeFi project
   provides a dozen challenges based around exploiting vulnerable
-  smart-contracts. This article lays out my reasoning and the eventual
-  solutions for each challange.
+  smart-contracts.  This article lays out my reasoning and the
+  eventual solutions for each challenge.
 
-  There are a few things the unfamilliar reader should be aquainted
-  with. This section may be skipped if you are already knowledgable on
-  the processes of smart contracts and the Ethereum Virtual Machine
-  (EVM). A table of contents for each challenge along with a short
+  There are a few things the unfamiliar reader should be acquainted
+  with.  This section may be skipped if you are already knowledgeable
+  on the processes of smart contracts and the Ethereum Virtual Machine
+  (EVM).  A table of contents for each challenge along with a short
   description is produced further below.
 
   First, smart-contracts represent small programs that can be deployed
-  on the Ethereum blockchain. Contractual transactions are a wholly
-  different paradigm than that of traditional computer
-  programs. Contracts are processed and verified by a network of
-  distributed computers, each making sure that rules encoded in the
-  contracts are not broken. A contract either succeds fully or is
-  rejected.
+  on the Ethereum blockchain.  Contractual transactions are a wholly
+  different paradigm than that of traditional computer programs.
+  Contracts are processed and verified by a network of distributed
+  computers, each making sure that rules encoded in the contracts are
+  not broken.  A contract either succeeds fully or is rejected.
 
   Only when a contractual program succeeds for the majority of nodes
-  does it become part of the distributed ledger. If any one
+  does it become part of the distributed ledger.  If any one
   requirement fails, it is as if the program never took place.
 
-  Secondly, function calls can be accompanied by a 'value'. This value
-  represents a certain amount of Ethereum. When a contract calls a
+  Secondly, function calls can be accompanied by a 'value'.  This
+  value represents a certain amount of Ether.  When a contract calls a
   function of another contract with some value, the ownership of that
-  Ethereum is transfered to the receiving contract. This understanding
-  will become handy later on when solving the challenges.
+  Ethereum is transferred to the receiving contract.  This
+  understanding will become handy later on when solving the
+  challenges.
 
-  1. [[*Unstoppable]] - Breaking a flash loan smart-contract
-  2. [[*Naive Receiver]] - Draining a third-party flash loan receiver
-  3. [[*Truster]] - A lender allows abritrary code execution
+  1. [[#unstoppable][Unstoppable]] --- Breaking a flash loan smart-contract
+  2. [[#naive-receiver][Naive Receiver]] --- Draining a third-party flash loan receiver
+  3. [[#truster][Truster]] --- A lender allows arbitrary code execution
+  4. [[#side-entrance][Side Entrance]] --- Why reentrancy guards are a good idea
+  5. [[#the-rewarder][The Rewarder]] --- Flooding a pool to reap massive rewards
+  6. [[#selfie][Selfie]] --- Exploiting a contract through it's governance
+  7. [[#compromised][Compromised]] --- Stealing NFTs using compromised secret keys
+  8. [[#puppet][Puppet]] --- Draining a lending contract with Uniswap
+  9. [[#puppet-v2][Puppet v2]] --- A contract is upgraded to Uniswap V2 without fixing underlying logic errors
+  10. 
+  11. 
+  12. 
 * Unstoppable
   This challenge provided two contracts, a 'flash loan' lender and a
-  receiver. The objective was to break the 'unstoppable' lending
+  receiver.  The objective was to break the 'unstoppable' lending
   contract.
 
   A 'flash loan' is a decentralised method of providing short loans to
   third-party contracts that require collateral to perform some
-  computation on the Ethereum Virtual Machine (EVM). These loans must be
-  payed back promptly or the contract will fail and this computation
-  will not reach consensus.
+  computation on the Ethereum Virtual Machine (EVM).  These loans must
+  be payed back promptly or the contract will fail and this
+  computation will not reach consensus.
 
   I tuned my attention first to the =UnstoppableLender.sol= contract,
-  which ultimately was the vulnerable contract. The main function here
-  is called ~flashLoan~. It checks before and after handing control to
-  the third-party contract that the tokens owned by the lending
-  contract are balanced--that the loan has been repaid. The code
-  checking if the loan has been payed back is included below:
+  which ultimately was the vulnerable contract.  The main function
+  here is called ~flashLoan~.  It checks before and after handing
+  control to the third-party contract that the tokens owned by the
+  lending contract are balanced--that the loan has been repaid.  The
+  code checking if the loan has been payed back is included below:
 
   #+begin_src solidity
     uint256 balanceAfter = damnValuableToken.balanceOf(address(this));         
     require(balanceAfter >= balanceBefore, "Flash loan hasn't been paid back");
   #+end_src
   
-  Above that function there exists a ~depositTokens~ function. The
+  Above that function there exists a ~depositTokens~ function.  The
   purpose of this function was to transfer tokens, in this case
   'DamnValuableTokens' into the contract's pool, and to increment the
-  pool's balance to keep it in accordance with it's token
-  balance. This was strange as it seemed redundant. If one wanted to
-  know how many tokens he possesses, one would use the ERC20 standard
-  function ~balanceOf~ with the address of the wallet or contract. The
+  pool's balance to keep it in accordance with it's token balance.
+  This was strange as it seemed redundant.  If one wanted to know how
+  many tokens he possesses, one would use the ERC20 standard function
+  ~balanceOf~ with the address of the wallet or contract.  The
   referenced function is shown below:
 
   #+begin_src solidity
@@ -85,60 +94,59 @@
   #+end_src
 
   The assertion checks if the balance of the contract is equal to the
-  pool balance. Now remember ~poolBalance~ is updated only by the
+  pool balance.  Now remember ~poolBalance~ is updated only by the
   ~depositTokens~ function which can be easily bypassed just by
   sending tokens from the attacker to the contract using the standard
-  ERC20 function ~transfer~. Let it be known that the attacker already
-  owns some tokens given to us for this challenge.
+  ERC20 function ~transfer~.  Let it be known that the attacker
+  already owns some tokens given to us for this challenge.
 
-  Now, the exploit is fairly trivial. First, we must connect to the
+  Now, the exploit is fairly trivial.  First, we must connect to the
   'DamnVulnerableToken' contract to authorise it to act on our behalf
   since we own the tokens, and then transfer some tokens from the
-  attackers address to the =UnstoppableLender= contract. This will
+  attackers address to the =UnstoppableLender= contract.  This will
   cause the balance of the contract to increase without updating the
   ~poolBalance~ variable and the assertion will fail, breaking any
-  future loan applications. The solution for this challenge is below:
+  future loan applications.  The solution for this challenge is below:
 
-  #+begin_src js
+  #+begin_src javascript
     const signedToken = this.token.connect(attacker);
     signedToken.transfer(this.pool.address, INITIAL_ATTACKER_TOKEN_BALANCE);
   #+end_src
 * Naive Receiver
   This challenge once again presents a flash loan lender and receiver
-  contract, this time with a fixed fee. The goal for this challenge is
-  to drain the contract of a third-party, who's source is contained in
-  the file =FlashLoanReceiver.sol=. Checking out this file shows that,
-  indeed the fee is being paid.
+  contract, this time with a fixed fee.  The goal for this challenge
+  is to drain the contract of a third-party, who's source is contained
+  in the file =FlashLoanReceiver.sol=.  Checking out this file shows
+  that, indeed the fee is being paid.
 
-  Next up, the lender contract--=NaiveReceiverLenderPool.sol=. In this
-  contract we can see the ~flashLoan~ function again, this time
-  altered slightly to take into account the fixed fee of one
-  ether.
+  Next up, the lender contract--=NaiveReceiverLenderPool.sol=.  In
+  this contract we can see the ~flashLoan~ function again, this time
+  altered slightly to take into account the fixed fee of one ether.
 
-  Now, this function's signature (shown below) has been added to. This
-  time a borrower address is required pointing to a deployed
-  contract. This must have been added to allow owners of a contract to
-  request a flash loan for said contract at any time. For example, to
-  request different amounts at certain times without needing to deploy
-  a brand new contract.
+  Now, this function's signature (shown below) has been added to.
+  This time a borrower address is required pointing to a deployed
+  contract.  This must have been added to allow owners of a contract
+  to request a flash loan for said contract at any time.  For example,
+  to request different amounts at certain times without needing to
+  deploy a brand new contract.
 
   #+begin_src solidity
     function flashLoan(address borrower, uint256 borrowAmount) external nonReentrant
   #+end_src
 
-  But this contract has a fatal flaw. There is no verification that
+  But this contract has a fatal flaw.  There is no verification that
   the person requesting the flash loan is the owner of the deployed
-  contract. This means that we can repeatably request loans of any
-  value and have that contract incur the fee. This allows one to
-  quicky drain the balance of deployed receiver contracts.
+  contract.  This means that we can repeatably request loans of any
+  value and have that contract incur the fee.  This allows one to
+  quickly drain the balance of deployed receiver contracts.
 
   The naive way of conducting this attack would be to request multiple
   loans in separate transactions until the receiver is drained of all
-  funds. This would be inefficient and costly as each transaction is
+  funds.  This would be inefficient and costly as each transaction is
   repeated, and the attacker would have to foot the transaction fees
-  for each one. For completeness, the code for this attack is below:
+  for each one.  For completeness, the code for this attack is below:
 
-  #+begin_src js
+  #+begin_src javascript
     for(let i = 0; i < 10; i++) {
         this.pool.flashLoan(this.receiver.address, 0);
     }
@@ -146,7 +154,7 @@
 
   A much better way of exploiting this flash loan vulnerability would
   be to deploy a contract as the attacker that would repeat the loan
-  application multiple times for us. The contract mentioned and the
+  application multiple times for us.  The contract mentioned and the
   code to deploy it are included below.
 
   #+begin_src solidity
@@ -171,19 +179,19 @@
     }
   #+end_src
 
-  #+begin_src js
+  #+begin_src javascript
     const AttackNaiveReceiverFactory = await ethers.getContractFactory('AttackNaiveReceiver', attacker);
     const attackerContract = await AttackNaiveReceiverFactory.deploy(this.pool.address);
 
     attackerContract.attack(this.receiver.address);
   #+end_src
 * Truster
-  This challenge is similar to the first one in how the loan is
-  lent. This time however, the ~flashLoan~ function requires two more
-  parameters. A target and some bytes. The bytes represent an encoded
-  function call with arguments. How the function signature is encoded
-  is determined by the Ethereum Application Binary Interface
-  (ABI). The function signature is as follows:
+  This challenge is similar to the first one in how the loan is lent.
+  This time however, the ~flashLoan~ function requires two more
+  parameters.  A target and some bytes.  The bytes represent an
+  encoded function call with arguments.  How the function signature is
+  encoded is determined by the Ethereum Application Binary Interface
+  (ABI).  The function signature is as follows:
 
   #+begin_src solidity
     function flashLoan(
@@ -195,18 +203,18 @@
   #+end_src
 
   When called, this function will first lend the requested amount of
-  tokens to the receiver, then apply the calldata to the target. And
+  tokens to the receiver, then apply the calldata to the target.  And
   finally, ensure that the loan has been paid back.
 
-  I think the reason why the two paramenters were added was to allow
+  I think the reason why the two parameters were added was to allow
   receiving contracts to dictate what function would be called when
-  requesting a loan, and with what paramenters. This would be unlike
+  requesting a loan, and with what arguments.  This would be unlike
   the fixed function calls previously, these functions were determined
   by the flash loan lender and needed to be implemented with the exact
   function signature.
 
-  While this may seem beneficial, more flexability may induce
-  potential security vulnerabilities. Not only can the attacker still
+  While this may seem beneficial, more flexibility may induce
+  potential security vulnerabilities.  Not only can the attacker still
   control the borrower's address in the =TrusterLenderPool.sol=
   contract, but any any function data he passes in will be executed as
   the contract's signer against the selected target.
@@ -217,10 +225,10 @@
   all the tokens in circulation.
 
   A contract may now be written that would make the lender contract
-  approve the attacker (more specifcally, the attacker's contract) to
+  approve the attacker (more specifically, the attacker's contract) to
   have an allowance of all tokens in the pool, then all that's left is
   a simple function call to transfer all tokens available, to the
-  attacker. The relevant section of the aforementioned contract is
+  attacker.  The relevant section of the aforementioned contract is
   below:
 
   #+begin_src solidity
@@ -231,7 +239,7 @@
     }
   #+end_src
 
-  The tokens must be transfered to the contract first as the
+  The tokens must be transferred to the contract first as the
   ~transferFrom~ function will check if the sender has sufficient
   allowance, otherwise the contract will fail with error =transfer
   amount exceeds allowance=.
@@ -246,7 +254,7 @@
   If you understand the EVM, finding an exploit is quite simple.
   Since there is no reentrancy guard, like the one provided by
   [[https://docs.openzeppelin.com/contracts/4.x/api/security#ReentrancyGuard][OpenZeppelin]], we are able to, upon receiving the Ether, immediately
-  depoist all Ether back to the =SideEntranceLenderPool.sol= contract.
+  deposit all Ether back to the =SideEntranceLenderPool.sol= contract.
   We have lost the Ether but our allowance has increased.  The
   ~deposit~ function is as follows:
 
@@ -258,7 +266,7 @@
 
   Now all that is left is to withdraw all allowed Ether, draining the
   victim contract, and send it to the attacker.  This can be added to
-  the initial attack function. The attack function is listed below.
+  the initial attack function.  The attack function is listed below.
 
   #+begin_src solidity
     function attack(uint256 etherToSteal) external {
@@ -276,19 +284,19 @@
   Unlike the other challenges, the flash loan pool was not the primary
   target.  Central to this challenge was the contract named,
   ~TheRewarderPool.sol~.  This contract manages a communal pool,
-  people are able to depoit tokens in exchange for an amount of
+  people are able to deposit tokens in exchange for an amount of
   'RewardTokens' proportional to their stake in the pool.
 
-  The exploit for this challenge was quite trivial. First, we aquire a
-  flash loan. Deposit the borrowed tokens.  Then, withdraw all tokens
-  and receive our additional reward.  Since rewards are only
+  The exploit for this challenge was quite trivial.  First, we acquire
+  a flash loan.  Deposit the borrowed tokens.  Then, withdraw all
+  tokens and receive our additional reward.  Since rewards are only
   calculated after a fixed period of time as evidenced by the contract
-  excerpt below, we must wait to stage the attack. Under the local
+  excerpt below, we must wait to stage the attack.  Under the local
   Ethereum network, this must be done with an EVM command.
 
   Fixing this problem would require that there is an upper limit to
   the amount of deposited tokens and maybe, the wait time is enforced
-  for each user---this would make flash loans infeasable.
+  for each user---this would make flash loans infeasible.
 
   #+begin_src solidity
     function isNewRewardsRound() public view returns (bool) {
@@ -310,19 +318,18 @@
     rewardToken.transfer(msg.sender,
                          rewardToken.balanceOf(address(this)));
   #+end_src
-
 * Selfie
   This challenge presents us with another flash loan provider, this
-  time with an enticing ~drainAllFunds~ function. Sadly, this function
-  can only be called by governance members. Looking though the
-  provided contracts, it seems that this challenge is impossible.
+  time with an enticing ~drainAllFunds~ function.  Sadly, this
+  function can only be called by governance members.  Looking though
+  the provided contracts, it seems that this challenge is impossible.
 
   Both contracts are using the DamnValuableToken for bookkeeping
-  purposes. This would pose a risk if the governance contract didn't
-  first make a snapshot of the token. A token snapshot freezes
-  accounts and balances at a point in time for later use. The
+  purposes.  This would pose a risk if the governance contract didn't
+  first make a snapshot of the token.  A token snapshot freezes
+  accounts and balances at a point in time for later use.  The
   governance contract makes an initial snapshot as a mechanism for
-  deciding if a certain action goes though. An action is some
+  deciding if a certain action goes though.  An action is some
   computation on the assets held by the governance, and an action can
   only be executed if the person who proposed it has the majority of
   votes.
@@ -342,14 +349,14 @@
 
   Thankfully for us, the snapshot function of the
   'DamnValuableTokenSnapshot' contract is public and doesn't require
-  the caller to be a part of the governance. i.e.
+  the caller to be a part of the governance.  i.e.
   src_solidity{function snapshot() public returns (uint256)}
   
   Using this knowledge we can ask for a flash loan for the maximum
-  amount, immediately take a snapshot, then return the tokens. This
+  amount, immediately take a snapshot, then return the tokens.  This
   allows us to execute any function requiring a majority of votes,
-  such as the ~drainAllFunds~ function. The folowing code exemplifies
-  such an exploit.
+  such as the ~drainAllFunds~ function.  The following code
+  exemplifies such an exploit.
 
   #+begin_src solidity
     function setup(uint256 tokensToBorrow) external {
@@ -367,7 +374,6 @@
         token.transfer(msg.sender, amount);
     }
   #+end_src
-  
 * Compromised
   This challenge was the most complex one yet.  You are presented with
   the HTTP request shown below and three contracts.  The main contract
@@ -378,29 +384,27 @@
   contract.  Since smart-contract interactions must be replicated on
   multiple nodes in order to become consensus, one can not just use
   external resources as there is no guarantee that these will remain
-  consistent accross replications.
+  consistent across replications.
 
   #+caption: The leaky HTTP request
-  #+begin_quote
-          HTTP/2 200 OK
-          content-type: text/html
-          content-language: en
-          vary: Accept-Encoding
-          server: cloudflare
+  #+begin_verse
+          HTTP/2 200 OK\\
+          content-type: text/html\\
+          content-language: en\\
+          vary: Accept-Encoding\\
+          server: cloudflare\\
 
           4d 48 68 6a 4e 6a 63 34 5a 57 59 78 59 57 45 30 4e 54 5a 6b 59 54 59 31 59 7a 5a 6d 59 7a 55 34 4e 6a 46 6b 4e 44 51 34 4f 54 4a 6a 5a 47 5a 68 59 7a 42 6a 4e 6d 4d 34 59 7a 49 31 4e 6a 42 69 5a 6a 42 6a 4f 57 5a 69 59 32 52 68 5a 54 4a 6d 4e 44 63 7a 4e 57 45 35
 
           4d 48 67 79 4d 44 67 79 4e 44 4a 6a 4e 44 42 68 59 32 52 6d 59 54 6c 6c 5a 44 67 34 4f 57 55 32 4f 44 56 6a 4d 6a 4d 31 4e 44 64 68 59 32 4a 6c 5a 44 6c 69 5a 57 5a 6a 4e 6a 41 7a 4e 7a 46 6c 4f 54 67 33 4e 57 5a 69 59 32 51 33 4d 7a 59 7a 4e 44 42 69 59 6a 51 34
-  #+end_quote
-  #+begin_example
-  #+end_example
+  #+end_verse
 
   Looking though the contracts, I saw that there were two obvious
   entrypoints.  The first is in the ~buyOne~ function where it checks
   the median price, perhaps there is a way to control this.  The other
   was in the ~safeMint~ function where we are able to mint a new token
-  only if we are a member of ~MINTER_ROLE~. That check seems secure
-  upon futher investigation.
+  only if we are a member of ~MINTER_ROLE~.  That check seems secure
+  upon further investigation.
 
   Now, turning to the HTTP request, the format seems to be two ascii
   strings with a two character prefix =4d 48=.  My first suspicions
@@ -423,12 +427,13 @@
   So I guess the lesson is to know your tools.
   
   While I initially wrote this exploit in Javascript, I was unable to
-  read the return value from the Exchange contract for the token
-  id. Writing this exploit in Solidity would lower transaction fees as
+  read the return value from the Exchange contract for the token id.
+  Writing this exploit in Solidity would lower transaction fees as
   well.
 
   I will show the Javascript side of the exploit below as it is more
-  involved and the attacker contract is practically just a passthrough.
+  involved and the attacker contract is practically just a
+  pass-through.
   
   #+begin_src javascript
     it('Exploit', async function () {        
@@ -464,4 +469,106 @@
         // 5. Revert price back to initial
         await signedContracts[0].postPrice("DVNFT", INITIAL_NFT_PRICE);
     });
+  #+end_src
+* Puppet
+  I didn't know much about Uniswap before this other than it was a
+  DeFi token exchange.  The challenge description pointed me to the
+  [[https://docs.uniswap.org/protocol/V1/introduction][Uniswap V1 Protocol]] documentation.  This was indeed helpful and
+  contained all the information I needed to solve this challenge.
+
+  The victim contract for this challenge was named =PuppetPool.sol=.
+  This contract contains a ~borrow~ function where a user is able to
+  request an amount of tokens but must deposit a Ether collateral of
+  value twice that of the tokens.  The Uniswap exchange is trading 1:1
+  DamnValuableTokens for Ether.
+
+  The amount to be deposited is calculated using the
+  ~calculateDepositRequired~ function.  This function derives the
+  token's value using a Uniswap oracle.
+
+  #+begin_src solidity
+    function calculateDepositRequired(uint256 amount) public view returns (uint256) {
+        return amount * _computeOraclePrice() * 2 / 10 ** 18;
+    }
+  #+end_src
+
+  This gives us an opportunity for a simple exploit.  This exploit is
+  easy to come across for those with a basic understanding of
+  economics and supply-and-demand.  Since the attacker starts off with
+  a large amount of tokens, we can sell these, immediately dropping
+  the price and then request a loan.  The collateral for the loan will
+  be much cheaper.  A huge profit can be made by the attacker once the
+  exchange rate stabilises at close to it's original price.
+
+  The code to sell our tokens and then request a loan is as follows:
+  #+begin_src javascript
+    await signedToken.approve(this.uniswapExchange.address, tokensToSwap);
+    await signedExchange.tokenToEthSwapInput(
+        tokensToSwap,
+        ethers.constants.One,
+        (await ethers.provider.getBlock('latest')).timestamp * 2
+    );
+
+    await signedContract.borrow(POOL_INITIAL_TOKEN_BALANCE, {value: ATTACKER_INITIAL_ETH_BALANCE});
+  #+end_src
+
+  Some ways to fix this issue would be to limit the amount of tokens
+  allowed to be borrowed by a single user and include a mechanism that
+  increases the collateral proportionally to the amount borrowed.
+* Puppet v2
+  This challenge is similar to the previous one but this time the
+  contract has been upgraded to use Uniswap V2.  Once again the
+  [[https://docs.uniswap.org/protocol/V2/introduction][Protocol Reference]] is indispensable.  Unlike V1, the Uniswap
+  protocol adds additional Router and Pair contracts.  These promote
+  scalability across a ever increasing wide array of tokens.  Now all
+  that is needed to trade a token is to create a pair (the exchange
+  can facilitate this) and the router will handle the rest.
+
+  The exchange rate of a pair is calculated from the balance of the
+  Uniswap pair and can be controlled with the ~[add|remove]Liquidity*~
+  functions.
+
+  Since Uniswap pairs can only exchange one token for another, there
+  is no method of directly swapping Ether for a token.  This is the
+  purpose of a concept called "Wrapped Ether" (WETH).  Wrapped Ether
+  is regular token like any other but it's value is constant.  Using
+  the =WETH9.sol= contract, Ether can be wrapped and unwrapped
+  (deposited and withdrawn) making Ether-to-token exchanges possible
+  and can even be done in one transaction.
+
+  Now back to the challenge.  Once again we are able to drop the price
+  of the token but this time we must deposit a collateral of three
+  times the value of the token in WETH.  There is also a further
+  complication though, the Uniswap exchange is trading
+  DamnValuableTokens for WETH at a ration of 10:1.  This is evidenced
+  by these two constants used in the initialisation of the pair:
+
+  #+begin_src solidity
+    const UNISWAP_INITIAL_TOKEN_RESERVE = ethers.utils.parseEther('100');
+    const UNISWAP_INITIAL_WETH_RESERVE = ethers.utils.parseEther('10');
+  #+end_src
+
+  This means that while we are able to drop the price of DVTs we are
+  sill about 20 WETH short.  This means that we must wrap some Ether.
+  This took me quite some time to find out how to do as I thought it
+  was some function from the Uniswap pair but it was in the WETH
+  contract that I had overlooked.
+
+  This was not as straight forward as initially thought.
+  Frustratingly, the attacker starts off with only 20 ETH.  This means
+  that we cannot just buy 20 WETH as we won't be able to afford the
+  gas fee.  The exact value of WETH needed must be calculated.  The
+  difference between the attacker's balance and amount of WETH is
+  within ~0.5 Ether.
+
+  #+begin_src javascript
+    let etherToWrap;
+    {
+        const requiredDeposit = await this.lendingPool.calculateDepositOfWETHRequired(POOL_INITIAL_TOKEN_BALANCE);
+        const attackerBalance = await this.weth.balanceOf(attacker.address)
+        etherToWrap = requiredDeposit.sub(attackerBalance);
+    }
+
+    const signedWETH = await this.weth.connect(attacker);
+    await signedWETH.deposit({value: etherToWrap});
   #+end_src
